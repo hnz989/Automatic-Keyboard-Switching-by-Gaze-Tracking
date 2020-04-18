@@ -1,0 +1,18 @@
+CPP_FLAGS=-std=c++11
+OPENCV_LIBS:= -lopencv_core -lopencv_highgui -lopencv_imgproc -lopencv_objdetect -lopencv_imgcodecs -lopencv_videoio -lopencv_face
+LD_FLAGS=$(OPENCV_LIBS)
+
+default: EyeDetector
+hardwareswitch: hardwareswitch.cpp
+	g++ -c  hardwareswitch.cpp -o hardwareswitch.o -g -lbcm2835 -L/usr/local/include
+helpers: helpers.cpp
+	g++ $(CPP_FLAGS) $@ -o $^ -g
+findEyeCenter:	findEyeCenter.cpp
+	g++ $(CPP_FLAGS) $@ -o $^ $(LD_FLAGS) -g
+
+EyeDetector: eye_detector.cpp helpers.o findEyeCenter.o hardwareswitch.o 
+	g++ $(CPP_FLAGS) $^ -o $@ $(LD_FLAGS) -g
+#EyeDetector: eye_detector.cpp
+#	g++ $(CPP_FLAGS) $^ -o $@ $(LD_FLAGS)
+clean:
+	rm -f EyeDetector

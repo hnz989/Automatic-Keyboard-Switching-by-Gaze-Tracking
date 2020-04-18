@@ -1,0 +1,308 @@
+#include <iostream>
+#include <cstdio>
+#include <fstream>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/objdetect/objdetect.hpp>
+
+using namespace std;
+using namespace cv;
+std::vector<cv::Point> centers_Left;
+std::vector<cv::Point> centers_Right;
+cv::Point lastPoint_Right;
+cv::Point lastPoint_Left;
+
+int left_i;
+int right_i;
+
+//ofstream outputfile;
+FILE *outputfile;
+
+/* brief: 	Find the circles in the eye witch is the most black one 
+ * circles:	The circles already have been find
+ * eye:		The frame for the eye.
+ */
+cv::Vec3f getEyeball(cv::Mat &eye, std::vector<cv::Vec3f> &circles)
+{
+		//initize a int vector with all the value is zero
+	std::vector<int> sums(circles.size(), 0);
+		//scan the eye frame by x and y, which includes pixel
+		//then each pixel will be calculated for each circles
+	for (int y = 0; y < eye.rows; y++){
+		uchar *ptr = eye.ptr<uchar>(y);
+		for (int x = 0; x < eye.cols; x++){
+			int value = static_cast<int>(*ptr);
+			for (int i = 0; i < circles.size(); i++){
+				cv::Point center((int)std::round(circles[i][0]), (int)std::round(circles[i][1]));
+				int radius = (int)std::round(circles[i][2]);
+				if (std::pow(x - center.x, 2) + std::pow(y - center.y, 2) < std::pow(radius, 2)){
+					sums[i] += value;
+				}																			            
+			}
+			++ptr;
+		}
+	}
+	int smallestSum = 9999999;
+	int smallestSumIndex = -1;
+	for (int i = 0; i < circles.size(); i++){
+		if (sums[i] < smallestSum){
+		smallestSum = sums[i];
+		smallestSumIndex = i;
+		}
+	}
+	return circles[smallestSumIndex];
+}
+
+/* brief: This function get the left most eye
+ * eyes:  It should be the eyes have been detected which is in green triangle
+ */
+cv::Rect getLeftmostEye(std::vector<cv::Rect> &eyes)
+{
+	int leftmost = 99999999;
+	int leftmostIndex = -1;
+	for (int i = 0; i < eyes.size(); i++){
+		if (eyes[i].tl().x < leftmost){
+			leftmost = eyes[i].tl().x;
+			leftmostIndex = i;
+		}
+	}
+	return eyes[leftmostIndex];
+}
+
+/* brief:	Get the right most eye
+ */
+cv::Rect getRightmostEye(std::vector<cv::Rect> &eyes)
+{
+	int rightmost = -999999999;
+	int rightmostIndex = -1;
+	for (int i = 0; i < eyes.size(); i++){
+		if (eyes[i].tl().x > rightmost){
+			rightmost = eyes[i].tl().x;
+			rightmostIndex = i;
+		}
+	}
+	return eyes[rightmostIndex];
+}
+
+/* brief:	This function try to stabilize the center of points
+ * 			Points includes two value, x and y.
+ * windowsize:	The number of the iris can be utilized 
+ * points:	The input points,
+ */
+cv::Point stabilize(std::vector<cv::Point> &points, int windowSize)
+{
+	float sumX = 0;
+	float sumY = 0;
+	int count = 0;
+	for (int i = std::max(0, (int)(points.size() - windowSize)); i < points.size(); i++){
+		sumX += points[i].x;
+		sumY += points[i].y;
+		++count;
+	}
+	if (count > 0){
+		sumX /= count;
+		sumY /= count;
+	}
+	return cv::Point(sumX, sumY);
+}
+
+/* brief:	This function draw the face, eye and iris in the frame
+ * faceCascade & eyeCascade:	The exist classifier in the lib, no training is required
+ * frame:	The input image
+ * Others:	
+ * 			faces: the rectangle for face, it's a set of rectangle
+ * 			face:  the new frame for the faces
+ * 			eyes:  the rectangle for eye, it's a set of rectangle
+ * 			eye:   the new frame for eye
+ */
+void detectEyes(cv::Mat &frame, cv::CascadeClassifier &faceCascade, cv::CascadeClassifier &eyeCascade, cv::CascadeClassifier &noseCascade)
+{
+	int none_zero_flag_left = 1;
+	int none_zero_flag_right = 1;
+	float temp_x_left, temp_y_left;
+	float temp_x_right, temp_y_right;
+	cv::Mat grayscale;
+	cv::cvtColor(frame, grayscale, CV_BGR2GRAY); // convert image to grayscale
+	cv::equalizeHist(grayscale, grayscale); // enhance image contrast 
+	
+		//the method to find faces, the result is store in the face
+	std::vector<cv::Rect> faces;
+		//find faces in the grayscale
+	faceCascade.detectMultiScale(grayscale, faces, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, cv::Size(150, 150));
+	if (faces.size() == 0) return; // none face was detected
+		//if find face, use the first face
+	cv::Mat face = grayscale(faces[0]); // crop the face
+
+		//the method to find eyes, result is stored in the eyes
+	std::vector<cv::Rect> eyes;
+	eyeCascade.detectMultiScale(face, eyes, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, cv::Size(30, 30)); // same thing as above    
+	rectangle(frame, faces[0].tl(), faces[0].br(), cv::Scalar(255, 0, 0), 2);
+	if (eyes.size() != 2) return; // both eyes were not detected
+	for (cv::Rect &eye : eyes){
+		rectangle(frame, faces[0].tl() + eye.tl(), faces[0].tl() + eye.br(), cv::Scalar(0, 255, 0), 2);
+	}
+		//the same method to find the nose, which wil be used to compare with iris
+	std::vector<cv::Rect> nose;
+	noseCascade.detectMultiScale(face, nose, 1.1, 2, 0 | CV_HAAR_SCALE_IMAGE, cv::Size(30, 30));
+
+	if(nose.size() == 0 ) return;
+	//	fprintf(outputfile,"The frame for nose %7d%7d%7d%7d\n",nose.x,nose.y,nose.height,nose.width);
+		int distance_x, distance_y;
+		float ratio_x, ratio_y;
+		distance_x = (nose[0].x + nose[0].width) / 2 - faces[0].width / 2;
+		distance_y = (nose[0].y + nose[0].height) / 2 - faces[0].height / 2;
+		ratio_x =float( (nose[0].x + nose[0].width) / 2) / float( faces[0].width / 2);
+		ratio_y =float( (nose[0].y + nose[0].height) / 2) /float( faces[0].height / 2);
+
+		fprintf(outputfile,"The frame for nose %7d%7d%7d%7d\n",nose[0].x,nose[0].y,nose[0].height,nose[0].width);
+		fprintf(outputfile,"The relative ratio is  %7d%7d%7.3f%7.3f\n",distance_x,distance_y,ratio_x,ratio_y);
+	//	fprintf(outputfile,"The frame for face %7d%7d%7d%7d\n",faces[0].x,faces[0].y,faces[0].height,faces[0].width);
+	
+		//then, it is the time to find iris
+	cv::Rect eyeRect_Left = getLeftmostEye(eyes);	//use the leftmost eyes
+	cv::Mat eye_Left = face(eyeRect_Left); // crop the leftmost eye
+	cv::equalizeHist(eye_Left, eye_Left);		//increase the conrtast
+	std::vector<cv::Vec3f> circles_Left;
+		//find the cycles in the eye
+	cv::HoughCircles(eye_Left, circles_Left, CV_HOUGH_GRADIENT, 1, eye_Left.cols / 8, 250, 15, eye_Left.rows / 8, eye_Left.rows / 3);
+	cv::Point center_Left;
+
+//	fprintf(outputfile,"The frame for eye %7d%7d%7d%7d\n",eyeRect_Left.x,eyeRect_Left.y,eyeRect_Left.height,eyeRect_Left.width);
+	if (circles_Left.size() > 0){
+		cv::Vec3f eyeball_Left = getEyeball(eye_Left, circles_Left);
+			//eyeball store the center and the radius of the circles
+		cv::Point Left(eyeball_Left[0], eyeball_Left[1]);
+		center_Left = Left;
+		centers_Left.push_back(center_Left);
+		center_Left = stabilize(centers_Left, 5);
+		if (centers_Left.size() > 1){
+			cv::Point diff;
+			diff.x = (center_Left.x - lastPoint_Left.x) * 20;
+			diff.y = (center_Left.y - lastPoint_Left.y) * -30;
+		}
+		lastPoint_Left = center_Left;
+		int radius_Left = (int)eyeball_Left[2];
+		cv::circle(frame, faces[0].tl() + eyeRect_Left.tl() + center_Left, radius_Left, cv::Scalar(0, 0, 255), 2);
+	
+	//	temp_x_left = center_Left.x + eyeRect_Left.x;
+	//	temp_y_left = center_Left.y + eyeRect_Left.y;
+
+		temp_x_left =float( center_Left.x) / float(eyeRect_Left.width);
+		temp_y_left = float(center_Left.y) / float(eyeRect_Left.height);
+		cv::circle(eye_Left, center_Left, radius_Left, cv::Scalar(255, 255, 255), 2);
+	//	fprintf(outputfile,"%7d%13d%13d",left_i,temp_x, temp_y);
+	//	outputfile<<"The left point is "<< left_i << " the value is "<<center_Left.x<<" the y is "<<center_Left.y<<endl;
+		left_i++;
+	}
+	else{
+	//	fprintf(outputfile,"%7d%13d%13d",left_i,0,0);
+	//	cout<<"The left point is "<< left_i << " the value is "<<0<<" the y is "<<0<<endl;
+		left_i++;
+		none_zero_flag_left = 0;
+	}
+	cv::imshow("Eye_Right", eye_Left);
+	
+		//the same work to right eyes
+	cv::Rect eyeRect_Right = getRightmostEye(eyes);	//use the leftmost eyes
+	cv::Mat eye_Right = face(eyeRect_Right); // crop the leftmost eye
+	cv::equalizeHist(eye_Right, eye_Right);		//increase the conrtast
+	std::vector<cv::Vec3f> circles_Right;
+	cv::Point center_Right;
+		//find the cycles in the eye
+	cv::HoughCircles(eye_Right, circles_Right, CV_HOUGH_GRADIENT, 1, eye_Right.cols / 8, 250, 15, eye_Right.rows / 8, eye_Right.rows / 3);
+//	fprintf(outputfile,"The frame for eye %7d%7d%7d%7d\n",eyeRect_Right.x,eyeRect_Right.y,eyeRect_Right.height,eyeRect_Right.width);
+	if (circles_Right.size() > 0){
+		cv::Vec3f eyeball_Right = getEyeball(eye_Right, circles_Right);
+			//eyeball store the center and the radius of the circles
+		cv::Point Right(eyeball_Right[0], eyeball_Right[1]);
+		center_Right = Right;
+		centers_Right.push_back(center_Right);
+		center_Right = stabilize(centers_Right, 5);
+		lastPoint_Right = center_Right;
+		int radius_Right = (int)eyeball_Right[2];
+		cv::circle(frame, faces[0].tl() + eyeRect_Right.tl() + center_Right, radius_Right, cv::Scalar(0, 0, 255), 2);
+		cv::circle(eye_Right, center_Right, radius_Right, cv::Scalar(255, 255, 255), 2);
+	//	cout<<"The right point is "<< right_i << " the value is "<<center_Right.x<<" the y is "<<center_Right.y<<endl;
+	//	int temp_x; int temp_y;
+	//	temp_x_right = faces[0].width -center_Right.x - eyeRect_Right.x;
+	//	temp_y_right = faces[0].height -center_Right.y - eyeRect_Right.y;
+		temp_x_right =float( center_Right.x) / float(eyeRect_Right.width);
+		temp_y_right = float(center_Right.y) / float(eyeRect_Right.height);
+	//	if(none_zero_flag == 1){
+	//		fprintf(outputfile,"     %7d%13d%13d\n",right_i,temp_x,temp_y);
+	//	}
+	//	else{
+	//		fprintf(outputfile,"\n");
+	//	}
+		right_i++;
+	}
+	else{
+	//	fprintf(outputfile,"\n");
+	//	outputfile<<"The right point is "<< right_i << " the value is "<<0<<" the y is "<<0<<endl;
+		right_i++;
+		none_zero_flag_right = 0;
+	}
+	if(none_zero_flag_left == 1 && none_zero_flag_right == 1){
+		fprintf(outputfile,"%7d%13.3f%13.3f",left_i,temp_x_left, temp_y_left);
+		fprintf(outputfile,"     %7d%13.3f%13.3f\n",left_i,temp_x_right, temp_y_right);
+	}
+	cv::imshow("Eye_Right", eye_Right);
+}
+
+
+int main(int argc, char **argv)
+{	
+	if (argc != 3){
+	std::cerr << "Usage: EyeDetector <WEBCAM_INDEX>" << std::endl;
+	return -1;
+	}
+	cv::CascadeClassifier faceCascade;
+	cv::CascadeClassifier eyeCascade;
+	cv::CascadeClassifier noseCascade;
+	if (!faceCascade.load("./haarcascade_frontalface_alt.xml")){
+		std::cerr << "Could not load face detector." << std::endl;
+		return -1;
+	}    
+	if (!eyeCascade.load("./haarcascade_eye_tree_eyeglasses.xml")){
+		std::cerr << "Could not load eye detector." << std::endl;
+		return -1;
+	}
+	if (!noseCascade.load("./haarcascade_mcs_nose.xml")){
+		std::cerr << "Could not load nose detector." << std::endl;
+		return -1;
+	}
+	cv::VideoCapture cap(0); // the fist webcam connected to your PC
+	if (!cap.isOpened()){
+		std::cerr << "Webcam not detected." << std::endl;
+		return -1;
+	}
+		//create the output file
+//	outputfile.open(argv[2],"w");
+//if( !outputfile.is_open()){
+//		cout<< "ERROR Cannot open file "<< argv[2] <<"for output"<<endl;
+//		return 1;
+//	}	)	
+	outputfile = fopen(argv[2],"w");
+	if( outputfile == NULL){
+		cout<< "ERROR Cannot open file "<< argv[2] <<"for output"<<endl;
+		return 1;
+	}
+
+	fprintf(outputfile,"%7s%13s%13s","left","x","y");
+	fprintf(outputfile,"     %7s%13s%13s\n","right","x","y");
+
+	cv::Mat frame;
+	while (1){
+		cap >> frame; // outputs the webcam image to a Mat
+		if (!frame.data) break;
+		detectEyes(frame, faceCascade, eyeCascade, noseCascade);
+		cv::imshow("Webcam", frame); // displays the Mat
+		if (cv::waitKey(30) >= 0) break;  // takes 30 frames per second. if the user presses any button, it stops from showing the webcam
+	}
+
+		//close the file
+//	outputfile.close();
+	return 0;
+}
+

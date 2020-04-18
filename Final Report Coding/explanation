@@ -1,0 +1,12 @@
+cv :: Mat 
+	The class Mat represents an n-dimensional dense numerical single-channel or multi-channel array. 
+
+cv :: Rect
+	emplate class for 2D rectangles, described by the following parameters:
+	Coordinates of the top-left corner. This is a default interpretation of Rect_::x and Rect_::y in OpenCV.
+
+cv::Scaler
+	it should represent one color by three value
+
+static_cast
+	do a data type convetor
